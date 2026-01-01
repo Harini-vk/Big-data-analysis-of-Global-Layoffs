@@ -1,124 +1,71 @@
-# from pyspark.sql import SparkSession
-
-# spark = SparkSession.builder.appName("LayoffAnalysis").getOrCreate()
-
-# df = spark.read.csv("layoffs.csv", header=True, inferSchema=True)
-# df.show(5)
-
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, to_date, year
-import pandas as pd
-import matplotlib.pyplot as plt
+from pyspark.sql.functions import col, trim
 
-# 1️⃣ Start Spark session
-spark = SparkSession.builder.appName("LayoffAnalysis").getOrCreate()
+# -----------------------------------------
+# 1️⃣ Create Spark Session
+# -----------------------------------------
+spark = SparkSession.builder \
+    .appName("Layoffs Data Cleaning") \
+    .getOrCreate()
 
-# 2️⃣ Read the CSV file
-# (make sure layoffs.csv is in the same folder as this Python file)
-df = spark.read.csv("layoffs.csv", header=True, inferSchema=True)
+# -----------------------------------------
+# 2️⃣ Load raw CSV data from local file
+# -----------------------------------------
+# Reading from local file instead of HDFS (no upload needed)
+df = spark.read.option("header", "true").csv("layoffdataset.csv")  # Assumes file is in the current directory
 
-print("=== Raw Data ===")
-df.show(5)
+print("Raw data loaded successfully!")
+print("Total Rows:", df.count())
+print("Columns:", df.columns)
 
+# -----------------------------------------
 # 3️⃣ Data Cleaning
-# - Drop rows with null Company or Country
-# - Convert Date column to DateType
-df_clean = df.dropna(subset=["Company", "Country"])
-df_clean = df_clean.withColumn("Date", to_date(col("Date"), "yyyy-MM-dd"))
+# -----------------------------------------
 
-# (HERE) Save cleaned data to HDFS
-# df_clean.write.mode("overwrite").csv("hdfs://localhost:9000/layoffs_project/cleaned_data1") 
+# Step 1: Remove duplicate rows
+df = df.dropDuplicates()
 
+# Step 2: Drop rows with all NULL values
+df = df.na.drop(how="all")
 
-print("=== Cleaned Data ===")
-df_clean.show(5)
+# Step 3: Trim extra spaces in string columns
+string_cols = [field.name for field in df.schema.fields if field.dataType.simpleString() == 'string']
+for c in string_cols:
+    df = df.withColumn(c, trim(col(c)))
 
+# Step 4: Drop irrelevant columns
+columns_to_drop = ["List_of_Employees_Laid_Off", "Source", "Date_Added"]
+for col_name in columns_to_drop:
+    if col_name in df.columns:
+        df = df.drop(col_name)
 
+# Step 5: Handle missing values in numeric columns
+if "Percentage" in df.columns:
+    df = df.na.fill({"Percentage": "0"})
 
+# Step 6: Convert numeric columns to proper types
+if "Percentage" in df.columns:
+    df = df.withColumn("Percentage", col("Percentage").cast("double"))
+if "Laid_Off_Count" in df.columns:
+    df = df.withColumn("Laid_Off_Count", col("Laid_Off_Count").cast("int"))
+if "Funds_Raised" in df.columns:
+    df = df.withColumn("Funds_Raised", col("Funds_Raised").cast("double"))
 
-import os
+# -----------------------------------------
+# 4️⃣ Show sample cleaned data
+# -----------------------------------------
+print("\nSample Cleaned Data:")
+df.show(10)
 
-output_folder = "C:/Users/vhari/Desktop/big data/cleaned_data1"
-if not os.path.exists(output_folder):
-    os.makedirs(output_folder)
+# -----------------------------------------
+# 5️⃣ Save cleaned data to local directory
+# -----------------------------------------
+output_path = "layoffs_cleaned"  # Saves to a local subdirectory (e.g., C:\Users\vhari\Desktop\big data\layoffs_cleaned)
+df.write.mode("overwrite").option("header", "true").csv(output_path)
 
-df_clean.write.mode("overwrite").csv(output_folder)
-print(f"Cleaned data saved at: {output_folder}")
+print(f"\nCleaned dataset saved locally at: {output_path}")
 
-
-
-
-
-# 4️⃣ Add Year column for trend analysis
-df_clean = df_clean.withColumn("Year", year(col("Date")))
-
-# 5️⃣ Aggregations
-
-# By Country
-country_counts = (
-    df_clean.groupBy("Country")
-    .sum("Laid_Off")
-    .withColumnRenamed("sum(Laid_Off)", "Total_Layoffs")
-    .orderBy(col("Total_Layoffs").desc())
-)
-
-print("=== Total Layoffs by Country ===")
-country_counts.show()
-
-# By Industry
-industry_counts = (
-    df_clean.groupBy("Industry")
-    .sum("Laid_Off")
-    .withColumnRenamed("sum(Laid_Off)", "Total_Layoffs")
-    .orderBy(col("Total_Layoffs").desc())
-)
-
-print("=== Total Layoffs by Industry ===")
-industry_counts.show()
-
-# By Year
-yearly_counts = (
-    df_clean.groupBy("Year")
-    .sum("Laid_Off")
-    .withColumnRenamed("sum(Laid_Off)", "Total_Layoffs")
-    .orderBy("Year")
-)
-
-print("=== Total Layoffs by Year ===")
-yearly_counts.show()
-
-# 6️⃣ Convert to Pandas for plotting
-pdf_country = country_counts.toPandas()
-pdf_industry = industry_counts.toPandas()
-pdf_yearly = yearly_counts.toPandas()
-
-# 7️⃣ Visualization with Matplotlib
-
-plt.figure(figsize=(10,6))
-plt.bar(pdf_country["Country"], pdf_country["Total_Layoffs"])
-plt.title("Layoffs by Country")
-plt.xticks(rotation=45)
-plt.tight_layout()
-plt.savefig("layoffs_by_country.png")
-plt.show()
-
-plt.figure(figsize=(10,6))
-plt.bar(pdf_industry["Industry"], pdf_industry["Total_Layoffs"])
-plt.title("Layoffs by Industry")
-plt.xticks(rotation=45)
-plt.tight_layout()
-plt.savefig("layoffs_by_industry.png")
-plt.show()
-
-plt.figure(figsize=(8,5))
-plt.plot(pdf_yearly["Year"], pdf_yearly["Total_Layoffs"], marker="o")
-plt.title("Layoffs by Year")
-plt.xlabel("Year")
-plt.ylabel("Total Layoffs")
-plt.grid(True)
-plt.tight_layout()
-plt.savefig("layoffs_by_year.png")
-plt.show()
-
-# 8️⃣ Stop Spark
+# -----------------------------------------
+# 6️⃣ Stop Spark session
+# -----------------------------------------
 spark.stop()
